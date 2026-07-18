@@ -19,6 +19,7 @@ from pathlib import Path
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent))
+import crypto  # noqa: E402
 import guardrail  # noqa: E402
 from tools import tor_search  # noqa: E402
 
@@ -99,10 +100,12 @@ def run_agent(research_notes: Path | None) -> None:
             f"{instructions}\n\n[Task]\n{TASK}"
         )
 
+    env.setdefault("AIDER_ANALYTICS", "false")  # no telemetry egress
     cmd = [
         "aider",
         "--model", f"ollama_chat/{MODEL}",
         "--no-git", "--yes-always", "--no-auto-commits", "--no-check-update",
+        "--analytics-disable",
     ]
     if research_notes is not None:
         cmd += ["--read", str(research_notes)]
@@ -115,15 +118,27 @@ def zip_output() -> Path:
     return Path(shutil.make_archive(str(zip_base), "zip", root_dir=WORKDIR))
 
 
-def email_zip(zip_path: Path) -> None:
+def email_zip(attachment: Path, encrypted: bool) -> None:
     msg = EmailMessage()
-    msg["Subject"] = f"Your build: {TASK[:60]}"
+    # Keep the task OUT of the email subject/body when the payload is encrypted —
+    # otherwise the description leaks in cleartext through Gmail.
+    if encrypted:
+        msg["Subject"] = "Your build (encrypted)"
+        body = (
+            "Your build is attached, encrypted to your age key.\n"
+            "Decrypt locally:  age -d -i ~/.age/key.txt -o build.zip "
+            f"{attachment.name}\n"
+        )
+    else:
+        msg["Subject"] = f"Your build: {TASK[:60]}"
+        body = f"Task:\n{TASK}\n\nThe built project is attached as a zip.\n"
     msg["From"] = os.environ["EMAIL_FROM"]
     msg["To"] = os.environ["EMAIL_TO"]
-    msg.set_content(f"Task:\n{TASK}\n\nThe built project is attached as a zip.\n")
-    with zip_path.open("rb") as fh:
+    msg.set_content(body)
+    subtype = "octet-stream" if encrypted else "zip"
+    with attachment.open("rb") as fh:
         msg.add_attachment(
-            fh.read(), maintype="application", subtype="zip", filename=zip_path.name
+            fh.read(), maintype="application", subtype=subtype, filename=attachment.name
         )
     with smtplib.SMTP(os.environ["SMTP_HOST"], int(os.environ["SMTP_PORT"])) as s:
         s.starttls()
@@ -131,7 +146,27 @@ def email_zip(zip_path: Path) -> None:
         s.send_message(msg)
 
 
+def shred_paths(*paths: Path) -> None:
+    """Best-effort secure deletion of build artifacts from the VM disk."""
+    for p in paths:
+        try:
+            if p.is_dir():
+                subprocess.run(
+                    ["find", str(p), "-type", "f", "-exec", "shred", "-u", "{}", "+"],
+                    check=False,
+                )
+                shutil.rmtree(p, ignore_errors=True)
+            elif p.exists():
+                subprocess.run(["shred", "-u", str(p)], check=False)
+        except Exception as e:  # noqa: BLE001
+            print(f"shred failed for {p}: {e}", file=sys.stderr)
+
+
 def main() -> None:
+    global TASK
+    # 0) Decrypt the task if you sent it age-encrypted (Telegram/GCP saw only ciphertext).
+    TASK = crypto.maybe_decrypt_task(TASK)
+
     # 1) Guardrail — refuse out-of-scope tasks before spending build time.
     allowed, reason = guardrail.check(TASK)
     if not allowed:
@@ -140,21 +175,28 @@ def main() -> None:
         return
 
     WORKDIR.mkdir(parents=True, exist_ok=True)
-    tg(f"🚀 Building: {TASK[:120]}")
+    tg("🚀 Building your request…")  # task text kept off the wire by default
+    zip_path = deliver = None
     try:
         notes = do_research(TASK)
         run_agent(notes)
         zip_path = zip_output()
-        size_mb = zip_path.stat().st_size / 1024 / 1024
-        email_zip(zip_path)
-        tg(f"✅ Done ({size_mb:.1f} MB). Emailed to {os.environ['EMAIL_TO']}.")
-        tg_document(zip_path)
+        deliver = crypto.encrypt_file(zip_path)  # → .age if a recipient key is set
+        encrypted = crypto.output_is_encrypted()
+        size_mb = deliver.stat().st_size / 1024 / 1024
+        email_zip(deliver, encrypted)
+        lock = " 🔒 encrypted to your key" if encrypted else ""
+        tg(f"✅ Done ({size_mb:.1f} MB){lock}. Emailed to {os.environ['EMAIL_TO']}.")
+        tg_document(deliver)
     except subprocess.TimeoutExpired:
         tg(f"⏱️ Build exceeded {BUILD_TIMEOUT_SEC // 60} min and was stopped. Try a smaller task.")
         raise
     except Exception as e:  # noqa: BLE001
         tg(f"❌ Build failed: {e}")
         raise
+    finally:
+        # Wipe build artifacts from the VM disk regardless of outcome.
+        shred_paths(*[p for p in (WORKDIR, zip_path, deliver) if p is not None])
 
 
 if __name__ == "__main__":

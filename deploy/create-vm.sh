@@ -49,6 +49,7 @@ guardrail-mode=${GUARDRAIL_MODE}@\
 guardrail-block=${GUARDRAIL_BLOCK}@\
 guardrail-policy=${GUARDRAIL_POLICY}@\
 agent-instructions=${AGENT_INSTRUCTIONS}@\
+recipient-age-pubkey=${RECIPIENT_AGE_PUBKEY}@\
 build-task=@\
 telegram-chat-id="
 

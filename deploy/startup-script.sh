@@ -39,6 +39,8 @@ export GUARDRAIL_MODE=$(meta "instance/attributes/guardrail-mode")
 export GUARDRAIL_POLICY=$(meta "instance/attributes/guardrail-policy")
 export GUARDRAIL_BLOCK=$(meta "instance/attributes/guardrail-block")
 export AGENT_INSTRUCTIONS=$(meta "instance/attributes/agent-instructions")
+export RECIPIENT_AGE_PUBKEY=$(meta "instance/attributes/recipient-age-pubkey")
+export VM_AGE_IDENTITY_FILE=/mnt/models/vm_age_key.txt
 export BUILD_TASK
 
 # ── Anti-runaway watchdog ───────────────────────────────────────────────────
@@ -56,10 +58,10 @@ MAX_RUNTIME_MIN=${MAX_RUNTIME_MIN:-60}
   gcloud compute instances stop "${NAME}" --zone="${ZONE}" --quiet
 ) &
 
-# ── Tor (for anonymized web search during builds) ───────────────────────────
-if ! command -v tor >/dev/null; then
+# ── Tor + age (anonymized search; end-to-end encryption of deliverables) ─────
+if ! command -v tor >/dev/null || ! command -v age >/dev/null; then
   DEBIAN_FRONTEND=noninteractive apt-get update -qq
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tor
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tor age
 fi
 systemctl enable --now tor 2>/dev/null || service tor start || true
 
