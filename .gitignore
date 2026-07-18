@@ -1,0 +1,12 @@
+# Never commit real secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Build artifacts
+*.zip
+build-*/
