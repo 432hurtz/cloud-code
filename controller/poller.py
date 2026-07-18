@@ -8,6 +8,7 @@ entirely. Needs `scw` on PATH and these env vars:
   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, BUILDER_ID, SCW_ZONE, GUARDRAIL_BLOCK,
   SCW_ACCESS_KEY, SCW_SECRET_KEY, SCW_DEFAULT_PROJECT_ID, SCW_DEFAULT_ZONE
 """
+import base64
 import json
 import os
 import subprocess
@@ -15,7 +16,23 @@ import time
 
 import requests
 
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+
+def _resolve_token() -> str:
+    """Prefer the plaintext token; else fetch it from Scaleway Secret Manager."""
+    tok = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if tok:
+        return tok
+    sid = os.environ.get("TELEGRAM_TOKEN_SECRET_ID", "").strip()
+    if sid:
+        out = subprocess.run(
+            ["scw", "secret", "version", "access", sid, "revision=latest_enabled", "-o", "json"],
+            capture_output=True, text=True,
+        )
+        return base64.b64decode(json.loads(out.stdout)["data"]).decode().strip()
+    raise SystemExit("no TELEGRAM_BOT_TOKEN or TELEGRAM_TOKEN_SECRET_ID set")
+
+
+TOKEN = _resolve_token()
 CHAT = os.environ["TELEGRAM_CHAT_ID"]
 BUILDER = os.environ["BUILDER_ID"]
 ZONE = os.environ["SCW_ZONE"]

@@ -43,6 +43,8 @@ deploy/
   builder-cloud-init.yaml    First-boot provisioning + the per-boot build service
   create-controller.sh       One-time: create the always-on Telegram controller
   controller-cloud-init.yaml First-boot provisioning for the controller
+  create-security-group.sh   Optional: egress-locked security group
+  put-secrets.sh             Optional: move secrets into Scaleway Secret Manager
 agent/                        Host-agnostic build logic (shipped to the builder)
   build_and_send.py           Runs the agent, researches, encrypts, emails, shreds
   crypto.py  guardrail.py  tools/tor_search.py  requirements.txt
@@ -168,9 +170,20 @@ Two layers stop the builder billing if anything hangs:
   telemetry is disabled.
 - The controller **only accepts messages from your `TELEGRAM_CHAT_ID`**, and long-polls
   (no public webhook is exposed).
-- Secrets ride in instance user-data (readable only by root on the box). For a harder
-  setup, move them to **Scaleway Secret Manager**, and run the controller on your own
-  machine so the API key stays off the cloud.
+- Secrets ride in instance user-data (readable only by root on the box). Run the
+  controller on your own machine to keep the API key off the cloud.
+
+### Optional hardening (two extra steps)
+- **Egress lockdown.** `bash deploy/create-security-group.sh` creates a security group
+  that default-drops outbound and allows only 80/443, 587 (Gmail), 53 (DNS), 123 (NTP);
+  Tor is pinned to 443/80 so it still works. Paste the printed id into
+  `SECURITY_GROUP_ID` and the deploy scripts attach it. This stops a compromised
+  dependency from opening arbitrary exfil channels — the build has no other egress.
+- **Secret Manager.** `bash deploy/put-secrets.sh` stores the Gmail password + bot token
+  in Scaleway Secret Manager; paste the printed ids into `SMTP_PASSWORD_SECRET_ID` /
+  `TELEGRAM_TOKEN_SECRET_ID` and re-run the create scripts. The instances then fetch
+  those values at boot instead of carrying them in user-data. Scope the API key to
+  Secret Manager read.
 
 ## Tuning power vs. price
 - **Cheaper:** set `BUILDER_TYPE=L4-1-24G` and a 4-bit `MODEL`

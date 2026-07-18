@@ -21,6 +21,7 @@ write_files:
       set -uo pipefail
       MD="http://169.254.42.42/user_data"
       ud() { curl -s "${MD}/$1" 2>/dev/null; }
+      secret() { [ -z "$1" ] && return 1; scw secret version access "$1" revision=latest_enabled -o json 2>/dev/null | jq -r '.data' | base64 -d; }
 
       ID=$(curl -s "http://169.254.42.42/conf?format=json" 2>/dev/null | jq -r '.id // empty')
       export SCW_ACCESS_KEY=$(ud scw-access-key)
@@ -45,8 +46,11 @@ write_files:
       export MODEL=$(ud model)
       export EMAIL_TO=$(ud email-to)         EMAIL_FROM=$(ud email-from)
       export SMTP_HOST=$(ud smtp-host)       SMTP_PORT=$(ud smtp-port)
-      export SMTP_USER=$(ud smtp-user)       SMTP_PASSWORD=$(ud smtp-password)
-      export TELEGRAM_BOT_TOKEN=$(ud telegram-bot-token)
+      export SMTP_USER=$(ud smtp-user)
+      SMTP_PW_SID=$(ud smtp-password-secret-id)
+      if [ -n "$SMTP_PW_SID" ]; then export SMTP_PASSWORD=$(secret "$SMTP_PW_SID"); else export SMTP_PASSWORD=$(ud smtp-password); fi
+      TG_SID=$(ud telegram-token-secret-id)
+      if [ -n "$TG_SID" ]; then export TELEGRAM_BOT_TOKEN=$(secret "$TG_SID"); else export TELEGRAM_BOT_TOKEN=$(ud telegram-bot-token); fi
       export TELEGRAM_CHAT_ID=$(ud telegram-chat-id)
       export ENABLE_RESEARCH=$(ud enable-research)
       export RESEARCH_MAX_RESULTS=$(ud research-max-results)
@@ -97,6 +101,8 @@ runcmd:
   - curl -fsSL https://ollama.com/install.sh | sh
   # Scaleway CLI (for self-stop + clearing the task)
   - curl -fsSL https://raw.githubusercontent.com/scaleway/scaleway-cli/master/scripts/get.sh | sh
+  # Keep Tor to relays on 80/443 so it works within the egress allowlist
+  - echo "FascistFirewall 1" >> /etc/tor/torrc
   # Agent Python deps
   - pip3 install --quiet aider-chat "requests[socks]" beautifulsoup4
   # Unpack the agent code shipped in user-data as a base64 tarball

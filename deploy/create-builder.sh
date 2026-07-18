@@ -11,6 +11,9 @@ set -a; source .env; set +a
 export SCW_ACCESS_KEY SCW_SECRET_KEY SCW_DEFAULT_PROJECT_ID
 export SCW_DEFAULT_ZONE="${SCW_ZONE}"
 
+EXTRA=()
+[ -n "${SECURITY_GROUP_ID:-}" ] && EXTRA+=("security-group-id=${SECURITY_GROUP_ID}")
+
 echo "==> Creating stopped GPU builder ${BUILDER_NAME} (${BUILDER_TYPE}) in ${SCW_ZONE}"
 # NOTE: root-volume sizing syntax can vary by CLI version; if this is rejected,
 # create with the default root volume and resize it to ${MODEL_VOLUME_GB}GB in
@@ -20,7 +23,7 @@ SERVER_ID=$(scw instance server create \
   type="${BUILDER_TYPE}" image="${BUILDER_IMAGE}" name="${BUILDER_NAME}" \
   root-volume="b_ssd:${MODEL_VOLUME_GB}GB" \
   cloud-init=@deploy/builder-cloud-init.yaml \
-  stopped=true zone="${SCW_ZONE}" -o json | jq -r '.id')
+  stopped=true zone="${SCW_ZONE}" "${EXTRA[@]}" -o json | jq -r '.id')
 echo "    builder id: ${SERVER_ID}"
 
 echo "==> Shipping agent code + config to instance user-data"
@@ -34,8 +37,17 @@ setk email-from           "${EMAIL_FROM}"
 setk smtp-host            "${SMTP_HOST}"
 setk smtp-port            "${SMTP_PORT}"
 setk smtp-user            "${SMTP_USER}"
-setk smtp-password        "${SMTP_PASSWORD}"
-setk telegram-bot-token   "${TELEGRAM_BOT_TOKEN}"
+# Secret Manager (optional) takes precedence; otherwise the value rides in user-data.
+if [ -n "${SMTP_PASSWORD_SECRET_ID:-}" ]; then
+  setk smtp-password-secret-id "${SMTP_PASSWORD_SECRET_ID}"; setk smtp-password ""
+else
+  setk smtp-password "${SMTP_PASSWORD}"
+fi
+if [ -n "${TELEGRAM_TOKEN_SECRET_ID:-}" ]; then
+  setk telegram-token-secret-id "${TELEGRAM_TOKEN_SECRET_ID}"; setk telegram-bot-token ""
+else
+  setk telegram-bot-token "${TELEGRAM_BOT_TOKEN}"
+fi
 setk enable-research      "${ENABLE_RESEARCH}"
 setk research-max-results "${RESEARCH_MAX_RESULTS}"
 setk guardrail-mode       "${GUARDRAIL_MODE}"

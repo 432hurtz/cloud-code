@@ -31,6 +31,7 @@ runcmd:
     U=http://169.254.42.42/user_data
     cat > /opt/controller/env <<EOF
     TELEGRAM_BOT_TOKEN=$(curl -s $U/telegram-bot-token)
+    TELEGRAM_TOKEN_SECRET_ID=$(curl -s $U/telegram-token-secret-id)
     TELEGRAM_CHAT_ID=$(curl -s $U/telegram-chat-id)
     BUILDER_ID=$(curl -s $U/builder-id)
     SCW_ZONE=$(curl -s $U/scw-zone)
