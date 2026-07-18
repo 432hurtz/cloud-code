@@ -48,6 +48,7 @@ research-max-results=${RESEARCH_MAX_RESULTS}@\
 guardrail-mode=${GUARDRAIL_MODE}@\
 guardrail-block=${GUARDRAIL_BLOCK}@\
 guardrail-policy=${GUARDRAIL_POLICY}@\
+agent-instructions=${AGENT_INSTRUCTIONS}@\
 build-task=@\
 telegram-chat-id="
 

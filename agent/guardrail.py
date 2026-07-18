@@ -30,40 +30,48 @@ def keyword_check(task: str) -> tuple[bool, str]:
 
 
 def policy_check(task: str) -> tuple[bool, str]:
-    """Ask the local model to judge the task against POLICY. Fail-closed on a
-    clear BLOCK; allow if the judge is unreachable (keyword layer still applies)."""
+    """Ask the local model to judge the task against POLICY (your rulebook).
+    Fail-CLOSED: if the judge can't be reached after retries, refuse rather than
+    risk letting a disallowed request through."""
     if not POLICY:
         return True, ""
     system = (
-        "You are a strict policy gate. Given a POLICY and a TASK, decide if the "
-        "task is allowed. Respond ONLY with compact JSON: "
-        '{"decision":"ALLOW"|"BLOCK","reason":"<short>"}.'
+        "You are a strict admissions gate for an autonomous code builder. "
+        "You are given a POLICY written by the owner and a TASK request. Decide, "
+        "using ONLY the POLICY as your rulebook, whether the task is allowed. "
+        "Judge the request's actual intent and purpose, not just its wording. "
+        "If the task conflicts with the POLICY, or is ambiguous about whether it "
+        "does, BLOCK it. Respond with ONLY compact JSON: "
+        '{"decision":"ALLOW"|"BLOCK","reason":"<short reason citing the policy>"}.'
     )
-    user = f"POLICY:\n{POLICY}\n\nTASK:\n{task}"
-    try:
-        resp = requests.post(
-            OLLAMA,
-            json={
-                "model": MODEL,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "stream": False,
-                "format": "json",
-                "options": {"temperature": 0},
-            },
-            timeout=120,
-        )
-        resp.raise_for_status()
-        content = resp.json()["message"]["content"]
-        verdict = json.loads(content)
-    except Exception as e:  # noqa: BLE001
-        print(f"[guardrail] policy check unavailable, allowing: {e}")
-        return True, ""
-    if str(verdict.get("decision", "")).upper() == "BLOCK":
-        return False, verdict.get("reason", "policy violation")
-    return True, ""
+    user = f"POLICY (the owner's rulebook):\n{POLICY}\n\nTASK request:\n{task}"
+    last_err = "unknown error"
+    for attempt in range(2):
+        try:
+            resp = requests.post(
+                OLLAMA,
+                json={
+                    "model": MODEL,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    "stream": False,
+                    "format": "json",
+                    "options": {"temperature": 0},
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            verdict = json.loads(resp.json()["message"]["content"])
+            if str(verdict.get("decision", "")).upper() == "BLOCK":
+                return False, verdict.get("reason", "conflicts with your policy")
+            return True, ""
+        except Exception as e:  # noqa: BLE001
+            last_err = str(e)
+            print(f"[guardrail] policy check attempt {attempt + 1} failed: {e}")
+    # Fail-closed: could not get a verdict → refuse.
+    return False, f"guardrail check could not run (fail-closed): {last_err}"
 
 
 def check(task: str) -> tuple[bool, str]:

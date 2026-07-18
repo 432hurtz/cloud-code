@@ -118,16 +118,28 @@ context before it builds. Example task:
 > Build a CLI weather tool.
 > search: open-meteo free weather api docs
 
-### Guardrails — topic safety *you* set
-You define what the builder will and won't work on. `GUARDRAIL_MODE` in `.env`:
-- `off` — build anything.
-- `keyword` — refuse tasks containing any `GUARDRAIL_BLOCK` term. Checked in the
-  trigger **before the GPU even boots**, so blocked requests cost nothing.
-- `strict` — keyword layer **plus** the local model judges each task against your
-  plain-English `GUARDRAIL_POLICY` and refuses violations.
+### Guardrails — topic safety *you* set (in your own words)
+You control the builder with **two plain-English prompts**, not just keywords:
 
-Edit `GUARDRAIL_BLOCK` (terms) and `GUARDRAIL_POLICY` (scope description) to taste.
-A refusal pings you on Telegram with the reason.
+- **`GUARDRAIL_POLICY` — what to block.** In `strict` mode the local model reads
+  this rulebook and judges every request against it, reasoning about intent
+  rather than matching words. Write it like you'd brief a person: what's allowed,
+  what's off-limits, and what to do when unsure. This is the real gate.
+- **`AGENT_INSTRUCTIONS` — how to act.** Injected into every build as the agent's
+  operating instructions — your standards, defaults, and voice (e.g. "always
+  include a README and tests", "prefer well-known libraries"). Shapes *how* it
+  builds; the policy governs *what* it will touch.
+
+`GUARDRAIL_MODE` in `.env`:
+- `strict` *(recommended)* — the model judges each request against your
+  `GUARDRAIL_POLICY`, **plus** the fast `GUARDRAIL_BLOCK` term check runs first.
+  **Fail-closed:** if the judge can't run, the request is refused, not allowed.
+- `keyword` — only the fast `GUARDRAIL_BLOCK` term check (no model reasoning).
+- `off` — build anything.
+
+`GUARDRAIL_BLOCK` is an optional list of obvious no-go terms refused **before the
+GPU even boots** (costs nothing) — a cheap first pass, not the main control. A
+refusal pings you on Telegram with the reason.
 
 ### Anti-runaway watchdog (never runs 24/7)
 Two layers stop the VM billing if anything hangs:

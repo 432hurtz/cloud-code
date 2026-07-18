@@ -91,10 +91,13 @@ def run_agent(research_notes: Path | None) -> None:
     env = dict(os.environ, OLLAMA_API_BASE="http://localhost:11434")
     env.setdefault("OLLAMA_CONTEXT_LENGTH", "16384")
 
-    policy = os.environ.get("GUARDRAIL_POLICY", "")
+    instructions = os.environ.get("AGENT_INSTRUCTIONS", "").strip()
     message = TASK
-    if policy:
-        message = f"[Scope policy — stay within this]\n{policy}\n\n[Task]\n{TASK}"
+    if instructions:
+        message = (
+            "[How to build — follow these operating instructions]\n"
+            f"{instructions}\n\n[Task]\n{TASK}"
+        )
 
     cmd = [
         "aider",

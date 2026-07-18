@@ -38,6 +38,7 @@ export RESEARCH_MAX_RESULTS=$(meta "instance/attributes/research-max-results")
 export GUARDRAIL_MODE=$(meta "instance/attributes/guardrail-mode")
 export GUARDRAIL_POLICY=$(meta "instance/attributes/guardrail-policy")
 export GUARDRAIL_BLOCK=$(meta "instance/attributes/guardrail-block")
+export AGENT_INSTRUCTIONS=$(meta "instance/attributes/agent-instructions")
 export BUILD_TASK
 
 # ── Anti-runaway watchdog ───────────────────────────────────────────────────
