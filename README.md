@@ -58,6 +58,9 @@ controller/
 
 ## Setup (about 30 minutes, once)
 
+> 📖 **Full step-by-step walkthrough: [SETUP.md](SETUP.md).** The summary below is the
+> short version.
+
 ### 0. Prerequisites
 - A **Scaleway account** and the [`scw` CLI](https://github.com/scaleway/scaleway-cli)
   installed. Create an **API key** (Console → IAM → API keys), scoped to Instances.
