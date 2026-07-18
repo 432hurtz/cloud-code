@@ -1,0 +1,44 @@
+#cloud-config
+# Provisions the always-on controller: installs the Telegram poller and runs it
+# as a service. Reads its config from instance user-data (set by create-controller.sh).
+package_update: true
+packages:
+  - python3-pip
+  - curl
+  - jq
+
+write_files:
+  - path: /etc/systemd/system/code-controller.service
+    content: |
+      [Unit]
+      Description=Telegram controller (starts the GPU builder)
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      EnvironmentFile=/opt/controller/env
+      ExecStart=/usr/bin/python3 /opt/controller/poller.py
+      Restart=always
+      RestartSec=5
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - curl -fsSL https://raw.githubusercontent.com/scaleway/scaleway-cli/master/scripts/get.sh | sh
+  - pip3 install --quiet requests
+  - mkdir -p /opt/controller
+  - curl -s http://169.254.42.42/user_data/poller-b64 | base64 -d > /opt/controller/poller.py
+  - |
+    U=http://169.254.42.42/user_data
+    cat > /opt/controller/env <<EOF
+    TELEGRAM_BOT_TOKEN=$(curl -s $U/telegram-bot-token)
+    TELEGRAM_CHAT_ID=$(curl -s $U/telegram-chat-id)
+    BUILDER_ID=$(curl -s $U/builder-id)
+    SCW_ZONE=$(curl -s $U/scw-zone)
+    GUARDRAIL_BLOCK=$(curl -s $U/guardrail-block)
+    SCW_ACCESS_KEY=$(curl -s $U/scw-access-key)
+    SCW_SECRET_KEY=$(curl -s $U/scw-secret-key)
+    SCW_DEFAULT_PROJECT_ID=$(curl -s $U/scw-project-id)
+    SCW_DEFAULT_ZONE=$(curl -s $U/scw-zone)
+    EOF
+  - systemctl daemon-reload
+  - systemctl enable --now code-controller.service
