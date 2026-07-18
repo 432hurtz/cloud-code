@@ -1,2 +1,3 @@
 aider-chat
-requests
+requests[socks]
+beautifulsoup4

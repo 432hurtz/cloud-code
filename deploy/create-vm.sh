@@ -33,16 +33,22 @@ gcloud compute instances create "${VM_NAME}" \
   --disk="name=${MODEL_DISK_NAME},device-name=models,mode=rw,boot=no" \
   --scopes=cloud-platform \
   --metadata-from-file=startup-script=deploy/startup-script.sh \
-  --metadata="\
-model=${MODEL},\
-email-to=${EMAIL_TO},\
-email-from=${EMAIL_FROM},\
-smtp-host=${SMTP_HOST},\
-smtp-port=${SMTP_PORT},\
-smtp-user=${SMTP_USER},\
-smtp-password=${SMTP_PASSWORD},\
-telegram-bot-token=${TELEGRAM_BOT_TOKEN},\
-build-task=,\
+  --metadata="^@^\
+model=${MODEL}@\
+email-to=${EMAIL_TO}@\
+email-from=${EMAIL_FROM}@\
+smtp-host=${SMTP_HOST}@\
+smtp-port=${SMTP_PORT}@\
+smtp-user=${SMTP_USER}@\
+smtp-password=${SMTP_PASSWORD}@\
+telegram-bot-token=${TELEGRAM_BOT_TOKEN}@\
+max-runtime-min=${MAX_RUNTIME_MIN}@\
+enable-research=${ENABLE_RESEARCH}@\
+research-max-results=${RESEARCH_MAX_RESULTS}@\
+guardrail-mode=${GUARDRAIL_MODE}@\
+guardrail-block=${GUARDRAIL_BLOCK}@\
+guardrail-policy=${GUARDRAIL_POLICY}@\
+build-task=@\
 telegram-chat-id="
 
 echo "==> Stopping VM so it sits idle (\$0 compute) until a Telegram message wakes it"

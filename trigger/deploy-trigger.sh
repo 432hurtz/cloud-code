@@ -12,7 +12,7 @@ gcloud functions deploy "${FUNCTION_NAME}" \
   --source=trigger --entry-point=telegram_webhook \
   --trigger-http --allow-unauthenticated \
   --memory=256Mi --timeout=60s \
-  --set-env-vars="PROJECT_ID=${PROJECT_ID},ZONE=${ZONE},VM_NAME=${VM_NAME},TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN},TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}"
+  --set-env-vars="^@^PROJECT_ID=${PROJECT_ID}@ZONE=${ZONE}@VM_NAME=${VM_NAME}@TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}@TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}@GUARDRAIL_BLOCK=${GUARDRAIL_BLOCK}"
 
 URL=$(gcloud functions describe "${FUNCTION_NAME}" \
   --project="${PROJECT_ID}" --region="${REGION}" \

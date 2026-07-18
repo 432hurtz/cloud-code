@@ -33,7 +33,34 @@ export SMTP_USER=$(meta "instance/attributes/smtp-user")
 export SMTP_PASSWORD=$(meta "instance/attributes/smtp-password")
 export TELEGRAM_BOT_TOKEN=$(meta "instance/attributes/telegram-bot-token")
 export TELEGRAM_CHAT_ID=$(meta "instance/attributes/telegram-chat-id")
+export ENABLE_RESEARCH=$(meta "instance/attributes/enable-research")
+export RESEARCH_MAX_RESULTS=$(meta "instance/attributes/research-max-results")
+export GUARDRAIL_MODE=$(meta "instance/attributes/guardrail-mode")
+export GUARDRAIL_POLICY=$(meta "instance/attributes/guardrail-policy")
+export GUARDRAIL_BLOCK=$(meta "instance/attributes/guardrail-block")
 export BUILD_TASK
+
+# ── Anti-runaway watchdog ───────────────────────────────────────────────────
+# Force-stops the VM after MAX_RUNTIME_MIN no matter what — a hung build, a
+# wedged model server, anything — and alerts you, so it can never run 24/7.
+MAX_RUNTIME_MIN=$(meta "instance/attributes/max-runtime-min")
+MAX_RUNTIME_MIN=${MAX_RUNTIME_MIN:-60}
+(
+  sleep $(( MAX_RUNTIME_MIN * 60 ))
+  if [ -n "${TELEGRAM_BOT_TOKEN}" ] && [ -n "${TELEGRAM_CHAT_ID}" ]; then
+    curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+      --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+      --data-urlencode "text=⏱️ Hard timeout: ${MAX_RUNTIME_MIN} min reached — force-stopping the VM so it doesn't keep billing." >/dev/null || true
+  fi
+  gcloud compute instances stop "${NAME}" --zone="${ZONE}" --quiet
+) &
+
+# ── Tor (for anonymized web search during builds) ───────────────────────────
+if ! command -v tor >/dev/null; then
+  DEBIAN_FRONTEND=noninteractive apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tor
+fi
+systemctl enable --now tor 2>/dev/null || service tor start || true
 
 # ── Mount the persistent model disk ─────────────────────────────────────────
 DEV=/dev/disk/by-id/google-models

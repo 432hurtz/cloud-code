@@ -15,11 +15,23 @@ ZONE = os.environ["ZONE"]
 VM_NAME = os.environ["VM_NAME"]
 TG_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ALLOWED_CHAT = os.environ["TELEGRAM_CHAT_ID"]
+# Fast pre-boot guardrail: refuse these terms before spending any GPU time.
+BLOCK = [t.strip().lower() for t in os.environ.get("GUARDRAIL_BLOCK", "").split(",") if t.strip()]
 
 HELP = (
     "👋 Send me a build request and I'll spin up the GPU, build it, and email "
-    "you the zip.\n\nExample:\n  Build a FastAPI todo app with SQLite and pytest"
+    "you the zip.\n\n"
+    "Commands:\n"
+    "  /status — is the builder idle or busy?\n"
+    "  /help — this message\n\n"
+    "Add web research by putting a line like\n  search: <query>\nin your task.\n\n"
+    "Example:\n  Build a FastAPI todo app with SQLite and pytest"
 )
+
+
+def vm_status():
+    client = compute_v1.InstancesClient()
+    return client.get(project=PROJECT, zone=ZONE, instance=VM_NAME).status
 
 
 def reply(chat_id, text):
@@ -71,6 +83,22 @@ def telegram_webhook(request):
 
     if not text or text in ("/start", "/help"):
         reply(chat_id, HELP)
+        return ("ok", 200)
+
+    if text == "/status":
+        try:
+            st = vm_status()
+            human = "🟢 idle (ready)" if st == "TERMINATED" else f"🟠 busy ({st})"
+        except Exception as e:  # noqa: BLE001
+            human = f"unknown ({e})"
+        reply(chat_id, f"Builder status: {human}")
+        return ("ok", 200)
+
+    # Fast guardrail: refuse blocked topics before booting the GPU.
+    low = text.lower()
+    hit = next((t for t in BLOCK if t in low), None)
+    if hit:
+        reply(chat_id, f"⛔ Refused: request matches blocked topic '{hit}'.")
         return ("ok", 200)
 
     start_build(chat_id, text)

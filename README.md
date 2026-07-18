@@ -99,6 +99,46 @@ zip** and a Telegram "✅ done" ping. The VM stops on its own.
 
 ---
 
+## Features
+
+### Telegram commands
+- **Any text** → a build request.
+- **`/status`** → is the builder idle (ready) or busy?
+- **`/help`** → usage.
+
+### Web search via Tor
+Give a build live internet context, routed through Tor (rotating exit IP, not the
+VM's address). Controlled by `ENABLE_RESEARCH` in `.env`:
+- `off` — no web access.
+- `manual` — only queries you name: put `search: <query>` lines in your task.
+- `auto` — `manual` plus one query auto-derived from the task.
+
+Findings are written to `RESEARCH.md` and handed to the coding model as read-only
+context before it builds. Example task:
+> Build a CLI weather tool.
+> search: open-meteo free weather api docs
+
+### Guardrails — topic safety *you* set
+You define what the builder will and won't work on. `GUARDRAIL_MODE` in `.env`:
+- `off` — build anything.
+- `keyword` — refuse tasks containing any `GUARDRAIL_BLOCK` term. Checked in the
+  trigger **before the GPU even boots**, so blocked requests cost nothing.
+- `strict` — keyword layer **plus** the local model judges each task against your
+  plain-English `GUARDRAIL_POLICY` and refuses violations.
+
+Edit `GUARDRAIL_BLOCK` (terms) and `GUARDRAIL_POLICY` (scope description) to taste.
+A refusal pings you on Telegram with the reason.
+
+### Anti-runaway watchdog (never runs 24/7)
+Two layers stop the VM billing if anything hangs:
+1. The build itself has a soft timeout (~40 min) → Telegram alert, then normal stop.
+2. A **hard watchdog** in the startup script force-stops the VM after
+   `MAX_RUNTIME_MIN` (default 60) **no matter what** — a wedged model server, a
+   stuck build, anything — and alerts you when it fires. Combined with the
+   always-run self-stop trap, the A100 can't be left running.
+
+---
+
 ## Security notes
 - The trigger **only accepts messages from your `TELEGRAM_CHAT_ID`** — nobody else can
   spend your GPU budget.
