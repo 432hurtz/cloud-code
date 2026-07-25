@@ -33,6 +33,15 @@ CHUNK_OVERLAP = 300
 MAX_FILE_READ = 2_000_000  # read at most 2MB of any single file
 PROGRESS_EVERY = 200        # files between progress pings + checkpoint backups
 
+# Network git ops (push/fetch of the index branch) must never hang the session:
+# a stalled transfer aborts via git's low-speed check, and a dead TCP connect
+# (which low-speed can't see — no bytes move) is caught by the subprocess
+# timeout. Index blobs can be large, so the hard cap is generous; the low-speed
+# abort is what catches a real stall quickly. Without this, a push to an
+# unreachable Forgejo hung forever and defeated the idle self-stop.
+GIT_NET_TIMEOUT = 120
+_GIT_NET_OPTS = ["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20"]
+
 _SKIP_DIR_NAMES = {".git", INDEX_DIRNAME, "__pycache__", "node_modules", ".venv",
                    ".aider.tags.cache.v4"}
 _SKIP_FILE_NAMES = {".aider.chat.history.md", ".aider.input.history",
@@ -233,10 +242,11 @@ def backup_to_origin(d: Path) -> bool:
                                capture_output=True, text=True, check=True).stdout.strip()
         commit = subprocess.run(["git", "-C", str(d), "commit-tree", tree, "-m", "cloud-code index backup"],
                                  env=env, capture_output=True, text=True, check=True).stdout.strip()
-        r = subprocess.run(["git", "-C", str(d), "push", "--force", "origin",
-                             f"{commit}:refs/heads/{INDEX_BRANCH}"], capture_output=True, text=True)
+        r = subprocess.run(["git", "-C", str(d), *_GIT_NET_OPTS, "push", "--force", "origin",
+                             f"{commit}:refs/heads/{INDEX_BRANCH}"],
+                            capture_output=True, text=True, timeout=GIT_NET_TIMEOUT)
         return r.returncode == 0
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001  (incl. subprocess.TimeoutExpired → treated as failed backup)
         return False
     finally:
         if tmp_index.exists():
@@ -245,8 +255,8 @@ def backup_to_origin(d: Path) -> bool:
 
 def restore_from_origin(d: Path) -> bool:
     try:
-        r = subprocess.run(["git", "-C", str(d), "fetch", "origin", INDEX_BRANCH],
-                            capture_output=True, text=True, timeout=120)
+        r = subprocess.run(["git", "-C", str(d), *_GIT_NET_OPTS, "fetch", "origin", INDEX_BRANCH],
+                            capture_output=True, text=True, timeout=GIT_NET_TIMEOUT)
         if r.returncode != 0:
             return False
         idx_dir = _idx_dir(d)
@@ -284,6 +294,8 @@ def index_project(name: str, d: Path) -> dict:
         conn.commit()
 
     total_chunks, done = 0, 0
+    backups_ok = True  # once a checkpoint backup fails (Forgejo unreachable), stop
+    # retrying so we don't burn a full network timeout at every checkpoint.
     for path, sha in to_index:
         fp = d / path
         try:
@@ -309,9 +321,13 @@ def index_project(name: str, d: Path) -> dict:
         done += 1
         if done % PROGRESS_EVERY == 0:
             _notify(f"📚 Indexing '{name}': {done}/{len(to_index)} files, {total_chunks} chunks so far…")
-            backup_to_origin(d)  # periodic checkpoint so progress survives a kill
+            if backups_ok:  # periodic checkpoint so progress survives a kill
+                backups_ok = backup_to_origin(d)
+                if not backups_ok:
+                    _notify("⚠️ Index backup to Forgejo failed (unreachable?) — "
+                            "continuing to index locally; progress is saved on disk.")
 
-    if to_index or to_remove:
+    if (to_index or to_remove) and backups_ok:
         backup_to_origin(d)
     conn.close()
     return {"changed": len(to_index), "removed": len(to_remove), "chunks": total_chunks, "restored": restored}
