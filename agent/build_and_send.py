@@ -167,12 +167,11 @@ def main() -> None:
     # 0) Decrypt the task if you sent it age-encrypted (Telegram/GCP saw only ciphertext).
     TASK = crypto.maybe_decrypt_task(TASK)
 
-    # 1) Guardrail — refuse out-of-scope tasks before spending build time.
-    allowed, reason = guardrail.check(TASK)
-    if not allowed:
-        tg(f"⛔ Refused by guardrail: {reason}")
-        print(f"guardrail blocked: {reason}")
-        return
+    # 1) Guardrail — informational only, never blocks (owner is the guardrail).
+    _, warning = guardrail.check(TASK)
+    if warning:
+        tg(f"⚠️ Guardrail note: {warning}")
+        print(f"guardrail note: {warning}")
 
     WORKDIR.mkdir(parents=True, exist_ok=True)
     tg("🚀 Building your request…")  # task text kept off the wire by default

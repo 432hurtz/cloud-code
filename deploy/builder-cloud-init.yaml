@@ -10,6 +10,9 @@ packages:
   - python3-pip
   - curl
   - jq
+  - git
+  - nodejs
+  - npm
 
 write_files:
   # Per-boot build logic. Reads the task from instance user-data, builds it,
@@ -19,15 +22,28 @@ write_files:
     content: |
       #!/usr/bin/env bash
       set -uo pipefail
+      # systemd runs this with no HOME, which makes the scw CLI fall back to "."
+      # for its config path and fail ("read .: is a directory"). Set it explicitly.
+      export HOME=/root
       MD="http://169.254.42.42/user_data"
-      ud() { curl -s "${MD}/$1" 2>/dev/null; }
+      # Scaleway's in-instance metadata service requires requests to /user_data/*
+      # to originate from a privileged source port (<1024) — plain curl uses a
+      # random high port and gets a silent-looking "invalid argument(s)" 400.
+      # --local-port 1-1023 fixes it (requires root, which this always runs as).
+      ud() { curl -s --local-port 1-1023 "${MD}/$1" 2>/dev/null; }
+      # All settings ride in a single "config" JSON key (Scaleway caps user-data
+      # at ~15 keys, so one-key-per-setting doesn't fit). build-task and
+      # telegram-chat-id stay as their own keys (the controller sets them).
+      CFG=$(ud config)
+      cfg() { printf '%s' "$CFG" | jq -r --arg k "$1" '.[$k] // ""'; }
       secret() { [ -z "$1" ] && return 1; scw secret version access "$1" revision=latest_enabled -o json 2>/dev/null | jq -r '.data' | base64 -d; }
 
       ID=$(curl -s "http://169.254.42.42/conf?format=json" 2>/dev/null | jq -r '.id // empty')
-      export SCW_ACCESS_KEY=$(ud scw-access-key)
-      export SCW_SECRET_KEY=$(ud scw-secret-key)
-      export SCW_DEFAULT_PROJECT_ID=$(ud scw-project-id)
-      export SCW_DEFAULT_ZONE=$(ud scw-zone)
+      export SCW_ACCESS_KEY=$(cfg scw-access-key)
+      export SCW_SECRET_KEY=$(cfg scw-secret-key)
+      export SCW_DEFAULT_PROJECT_ID=$(cfg scw-project-id)
+      export SCW_DEFAULT_ORGANIZATION_ID=$(cfg scw-organization-id)
+      export SCW_DEFAULT_ZONE=$(cfg scw-zone)
 
       # Always stop the instance on exit so a Spot/idle box can't keep billing.
       self_stop() {
@@ -39,30 +55,30 @@ write_files:
       }
       trap self_stop EXIT
 
-      BUILD_TASK=$(ud build-task)
-      if [ -z "$BUILD_TASK" ]; then echo "no build-task; stopping."; exit 0; fi
-      export BUILD_TASK
-
-      export MODEL=$(ud model)
-      export EMAIL_TO=$(ud email-to)         EMAIL_FROM=$(ud email-from)
-      export SMTP_HOST=$(ud smtp-host)       SMTP_PORT=$(ud smtp-port)
-      export SMTP_USER=$(ud smtp-user)
-      SMTP_PW_SID=$(ud smtp-password-secret-id)
-      if [ -n "$SMTP_PW_SID" ]; then export SMTP_PASSWORD=$(secret "$SMTP_PW_SID"); else export SMTP_PASSWORD=$(ud smtp-password); fi
-      TG_SID=$(ud telegram-token-secret-id)
-      if [ -n "$TG_SID" ]; then export TELEGRAM_BOT_TOKEN=$(secret "$TG_SID"); else export TELEGRAM_BOT_TOKEN=$(ud telegram-bot-token); fi
+      export MODEL=$(cfg model)
+      export EMAIL_TO=$(cfg email-to)         EMAIL_FROM=$(cfg email-from)
+      export SMTP_HOST=$(cfg smtp-host)       SMTP_PORT=$(cfg smtp-port)
+      export SMTP_USER=$(cfg smtp-user)
+      SMTP_PW_SID=$(cfg smtp-password-secret-id)
+      if [ -n "$SMTP_PW_SID" ]; then export SMTP_PASSWORD=$(secret "$SMTP_PW_SID"); else export SMTP_PASSWORD=$(cfg smtp-password); fi
+      TG_SID=$(cfg telegram-token-secret-id)
+      if [ -n "$TG_SID" ]; then export TELEGRAM_BOT_TOKEN=$(secret "$TG_SID"); else export TELEGRAM_BOT_TOKEN=$(cfg telegram-bot-token); fi
       export TELEGRAM_CHAT_ID=$(ud telegram-chat-id)
-      export ENABLE_RESEARCH=$(ud enable-research)
-      export RESEARCH_MAX_RESULTS=$(ud research-max-results)
-      export GUARDRAIL_MODE=$(ud guardrail-mode)
-      export GUARDRAIL_POLICY=$(ud guardrail-policy)
-      export GUARDRAIL_BLOCK=$(ud guardrail-block)
-      export AGENT_INSTRUCTIONS=$(ud agent-instructions)
-      export RECIPIENT_AGE_PUBKEY=$(ud recipient-age-pubkey)
+      export ENABLE_RESEARCH=$(cfg enable-research)
+      export RESEARCH_MAX_RESULTS=$(cfg research-max-results)
+      export GUARDRAIL_MODE=$(cfg guardrail-mode)
+      export GUARDRAIL_POLICY=$(cfg guardrail-policy)
+      export AGENT_INSTRUCTIONS=$(cfg agent-instructions)
+      export RECIPIENT_AGE_PUBKEY=$(cfg recipient-age-pubkey)
       export VM_AGE_IDENTITY_FILE=/opt/vm_age_key.txt
+      # Iterative session + private Forgejo review target
+      export FORGEJO_URL=$(cfg forgejo-url)
+      export FORGEJO_USER=$(cfg forgejo-user)
+      export FORGEJO_TOKEN=$(cfg forgejo-token)
+      export IDLE_TIMEOUT_MIN=$(cfg idle-timeout-min)
 
       # Anti-runaway watchdog: force-stop after MAX_RUNTIME_MIN no matter what.
-      MAX=$(ud max-runtime-min); MAX=${MAX:-60}
+      MAX=$(cfg max-runtime-min); MAX=${MAX:-60}
       (
         sleep $(( MAX * 60 ))
         if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
@@ -77,17 +93,59 @@ write_files:
       systemctl start ollama 2>/dev/null || { pgrep -x ollama >/dev/null || nohup ollama serve >/var/log/ollama.log 2>&1 & }
       for _ in $(seq 1 60); do curl -sf http://localhost:11434/api/tags >/dev/null && break; sleep 2; done
 
-      python3 /opt/agent/build_and_send.py
+      # Pull the model if it isn't on the volume yet. Idempotent + resumable: a
+      # partial/failed download just completes on the next boot, and the watchdog
+      # above force-stops a wedged pull. (A snapshot with the model baked in makes
+      # this a no-op — see deploy/snapshot-builder.sh.)
+      MODEL_NAME=$(cfg model)
+      if ! ollama list 2>/dev/null | grep -qi "${MODEL_NAME%%:*}"; then
+        if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+          curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=⬇️ First run: downloading the model (~34 GB) — slow, one time only." >/dev/null 2>&1 || true
+        fi
+        ollama pull "$MODEL_NAME" || true
+      fi
 
-      # Clear the task so a stray reboot doesn't rebuild it.
-      [ -n "$ID" ] && scw instance user-data set server-id="$ID" key=build-task content="" zone="$SCW_DEFAULT_ZONE" >/dev/null 2>&1 || true
+      # Small embedding model for the 'find:' command's local search index —
+      # cheap enough to just pull unconditionally rather than gate on a config flag.
+      if ! ollama list 2>/dev/null | grep -qi "nomic-embed-text"; then
+        ollama pull nomic-embed-text || true
+      fi
+
+      # Join the tailnet so the builder can reach your self-hosted Forgejo privately.
+      # State persists on the root volume, so later boots reconnect even if the key
+      # is spent; --authkey re-auths when it's reusable.
+      TS_KEY=$(cfg tailscale-authkey)
+      if [ -n "$TS_KEY" ]; then
+        systemctl start tailscaled 2>/dev/null || true
+        tailscale up --authkey="$TS_KEY" --hostname=cloud-code-builder --accept-dns=false >/dev/null 2>&1 \
+          || tailscale up --accept-dns=false >/dev/null 2>&1 || true
+      fi
+
+      python3 /opt/agent/session_agent.py
+
+      # Clear the task so a stray reboot doesn't rebuild it. Use delete, not an
+      # empty set — Scaleway's user-data API rejects empty content with a 400.
+      [ -n "$ID" ] && scw instance user-data delete server-id="$ID" key=build-task zone="$SCW_DEFAULT_ZONE" >/dev/null 2>&1 || true
       echo "build complete; stopping."
 
   - path: /etc/systemd/system/code-builder.service
     content: |
       [Unit]
+      # NOTE: deliberately no After=cloud-final.service. On this image
+      # cloud-final.service itself runs After=multi-user.target, and this unit
+      # is WantedBy=multi-user.target — combined with After=cloud-final.service
+      # that's a real ordering CYCLE (multi-user.target -> this unit ->
+      # cloud-final.service -> multi-user.target). systemd silently drops the
+      # job whenever that cycle is hit, which is why this unit would never
+      # actually start automatically (via the WantedBy symlink, a timer, or
+      # anything else going through normal job queueing) despite showing
+      # "enabled" with every dependency satisfied. Not needed anyway: the unit
+      # file can't exist before cloud-init's write_files already ran, so the
+      # ordering it was meant to provide is implicit.
       Description=Code builder (runs on every boot)
-      After=cloud-final.service network-online.target
+      After=network-online.target
       Wants=network-online.target
       [Service]
       Type=oneshot
@@ -96,22 +154,76 @@ write_files:
       [Install]
       WantedBy=multi-user.target
 
+  # `systemctl enable`'s WantedBy=multi-user.target symlink does NOT reliably
+  # auto-trigger this oneshot service at boot on this image — observed live:
+  # enabled, symlink present, all dependencies (cloud-final, network-online)
+  # active, yet the unit never started without a manual `systemctl start` (zero
+  # journal entries — systemd silently never queued the job). A cloud-init
+  # `bootcmd` retry doesn't work either: it runs too early for `systemctl` to
+  # reliably queue jobs (calls "succeed" in ~4ms without actually starting
+  # anything). A systemd timer is the idiomatic, reliable fix — OnBootSec=
+  # fires independent of the unit-ordering graph that's failing here.
+  - path: /etc/systemd/system/code-builder.timer
+    content: |
+      [Unit]
+      Description=Start code-builder shortly after boot (reliable backstop)
+      [Timer]
+      OnBootSec=20s
+      AccuracySec=1s
+      [Install]
+      WantedBy=timers.target
+
 runcmd:
   # Model server
   - curl -fsSL https://ollama.com/install.sh | sh
+  # Flash attention halves the KV-cache memory + speeds attention, which is what
+  # makes a 32K context window fit alongside the ~34GB q8 model on a 48GB card.
+  # Drop-in on the ollama service so it applies on every boot.
+  - mkdir -p /etc/systemd/system/ollama.service.d
+  - printf '[Service]\nEnvironment="OLLAMA_FLASH_ATTENTION=1"\n' > /etc/systemd/system/ollama.service.d/override.conf
+  - systemctl daemon-reload
   # Scaleway CLI (for self-stop + clearing the task)
   - curl -fsSL https://raw.githubusercontent.com/scaleway/scaleway-cli/master/scripts/get.sh | sh
+  # Tailscale (private reach to your self-hosted Forgejo)
+  - curl -fsSL https://tailscale.com/install.sh | sh
   # Keep Tor to relays on 80/443 so it works within the egress allowlist
   - echo "FascistFirewall 1" >> /etc/tor/torrc
   # Agent Python deps
-  - pip3 install --quiet aider-chat "requests[socks]" beautifulsoup4
-  # Unpack the agent code shipped in user-data as a base64 tarball
+  - pip3 install --quiet aider-chat "requests[socks]" beautifulsoup4 numpy
+  # Unpack the agent code shipped in user-data as a base64 tarball.
+  # --local-port 1-1023: /user_data/* requires a privileged source port (see ud() above).
   - mkdir -p /opt/agent
-  - curl -s http://169.254.42.42/user_data/agent-tar-b64 | base64 -d | tar xzf - --strip-components=1 -C /opt/agent
-  # Pre-pull the model onto the persistent root volume (first boot only)
+  - curl -s --local-port 1-1023 http://169.254.42.42/user_data/agent-tar-b64 | base64 -d | tar xzf - --strip-components=1 -C /opt/agent
+  # NOTE: the model is intentionally NOT pulled here. The per-boot run.sh pulls it
+  # on the first session if missing — idempotent and resumable across boots, and
+  # covered by the runtime watchdog so a stuck download can't bill forever (a
+  # failure class the old once-only cloud-init pull couldn't recover from).
   - systemctl start ollama || (nohup ollama serve >/var/log/ollama.log 2>&1 &)
-  - sleep 8
-  - ollama pull "$(curl -s http://169.254.42.42/user_data/model)"
-  # Enable the per-boot build service
+  # Enable AND start the per-boot build service for THIS (first) boot. Plain
+  # `enable` only arms the WantedBy symlink; --no-block (not `enable --now`,
+  # which blocks synchronously) starts it without waiting, since this is a
+  # oneshot that can run for the full build duration — cloud-init must finish
+  # and let the heartbeat below fire while the session runs in the background.
   - systemctl daemon-reload
   - systemctl enable code-builder.service
+  - systemctl --no-block start code-builder.service
+  # Enable the timer as the reliable trigger for EVERY boot after this one —
+  # the WantedBy symlink alone doesn't reliably auto-start the service (see the
+  # timer unit's comment above). Starting the timer itself is instant (it just
+  # schedules); the service it fires is what runs the actual session.
+  - systemctl enable --now code-builder.timer
+  # First-boot provisioning heartbeat to Telegram (no inbound SSH → this is how we
+  # confirm the model + tools installed before the session runs).
+  - |
+    U=http://169.254.42.42/user_data
+    TOK=$(curl -s --local-port 1-1023 $U/config | jq -r '."telegram-bot-token"')
+    CHAT=$(curl -s --local-port 1-1023 $U/telegram-chat-id)
+    OKO=$(command -v ollama >/dev/null && echo y || echo n)
+    OKA=$(command -v aider >/dev/null && echo y || echo n)
+    OKT=$(command -v tailscale >/dev/null && echo y || echo n)
+    OKG=$(command -v git >/dev/null && echo y || echo n)
+    if [ -n "$TOK" ] && [ -n "$CHAT" ]; then
+      curl -s "https://api.telegram.org/bot${TOK}/sendMessage" \
+        --data-urlencode "chat_id=${CHAT}" \
+        --data-urlencode "text=🔧 Builder provisioned — ollama=$OKO aider=$OKA tailscale=$OKT git=$OKG. Model downloads on first session (once)." >/dev/null 2>&1 || true
+    fi

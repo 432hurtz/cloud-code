@@ -1,48 +1,49 @@
 #!/usr/bin/env python3
 """Owner-controlled topic-safety guardrail.
 
-Two layers, both configured from env (set in .env, see GUARDRAIL_*):
-  * keyword  — refuse any task containing a blocked term (fast, no model needed;
-               the trigger also runs this BEFORE booting the GPU).
-  * strict   — additionally ask the local model to judge the task against your
-               plain-English GUARDRAIL_POLICY and refuse violations.
+One layer, configured from env (set in .env, see GUARDRAIL_*): the local model
+reads your plain-English GUARDRAIL_POLICY and can surface a short warning
+about a task. It never blocks or refuses anything — you are the guardrail;
+this just keeps you informed per your own policy. Set GUARDRAIL_MODE=off to
+disable entirely.
 
-You set the policy. This is a topic/scope control you tune, not a fixed filter.
+You set the policy. This is an informational heads-up you tune, not a filter.
+There is deliberately no separate keyword blocklist — a substring match warns
+about things your policy wouldn't even flag (e.g. a message merely mentioning
+"malware" while asking about detection), so all judgment lives in the policy
+the model reads.
 """
 import json
 import os
 
 import requests
 
-MODE = os.environ.get("GUARDRAIL_MODE", "keyword").lower()
+MODE = os.environ.get("GUARDRAIL_MODE", "strict").lower()
 POLICY = os.environ.get("GUARDRAIL_POLICY", "")
-BLOCK = [t.strip().lower() for t in os.environ.get("GUARDRAIL_BLOCK", "").split(",") if t.strip()]
 MODEL = os.environ.get("MODEL", "")
 OLLAMA = "http://localhost:11434/api/chat"
 
 
-def keyword_check(task: str) -> tuple[bool, str]:
-    low = task.lower()
-    for term in BLOCK:
-        if term in low:
-            return False, f"matched blocked term '{term}'"
-    return True, ""
-
-
 def policy_check(task: str) -> tuple[bool, str]:
-    """Ask the local model to judge the task against POLICY (your rulebook).
-    Fail-CLOSED: if the judge can't be reached after retries, refuse rather than
-    risk letting a disallowed request through."""
+    """Ask the local model to note anything about the task worth flagging per
+    POLICY (your rulebook). This NEVER blocks the task — you're the guardrail,
+    the model only keeps you informed. Fail-open: if the judge can't be
+    reached after retries (e.g. the GPU is busy loading the model), proceed
+    with no warning rather than stall on an outage."""
     if not POLICY:
         return True, ""
     system = (
-        "You are a strict admissions gate for an autonomous code builder. "
-        "You are given a POLICY written by the owner and a TASK request. Decide, "
-        "using ONLY the POLICY as your rulebook, whether the task is allowed. "
-        "Judge the request's actual intent and purpose, not just its wording. "
-        "If the task conflicts with the POLICY, or is ambiguous about whether it "
-        "does, BLOCK it. Respond with ONLY compact JSON: "
-        '{"decision":"ALLOW"|"BLOCK","reason":"<short reason citing the policy>"}.'
+        "You are an informational assistant for an autonomous code builder "
+        "owned and operated by one trusted person, who has final say over "
+        "everything it builds. You are given a POLICY written by the owner "
+        "and a TASK request. The task ALWAYS proceeds — you do not decide "
+        "whether it's allowed, and you must never refuse, block, or lecture. "
+        "Your only job is to note, briefly, anything about the task worth "
+        "flagging per the POLICY (e.g. risk of damage to the owner's own "
+        "machine or code, or a brief legal heads-up if the POLICY asks for "
+        "one). If there's nothing worth flagging, return an empty warning. "
+        'Respond with ONLY compact JSON: {"warning":"<short note, or empty '
+        'string if nothing worth flagging>"}.'
     )
     user = f"POLICY (the owner's rulebook):\n{POLICY}\n\nTASK request:\n{task}"
     last_err = "unknown error"
@@ -64,29 +65,26 @@ def policy_check(task: str) -> tuple[bool, str]:
             )
             resp.raise_for_status()
             verdict = json.loads(resp.json()["message"]["content"])
-            if str(verdict.get("decision", "")).upper() == "BLOCK":
-                return False, verdict.get("reason", "conflicts with your policy")
-            return True, ""
+            return True, str(verdict.get("warning", "") or "")
         except Exception as e:  # noqa: BLE001
             last_err = str(e)
             print(f"[guardrail] policy check attempt {attempt + 1} failed: {e}")
-    # Fail-closed: could not get a verdict → refuse.
-    return False, f"guardrail check could not run (fail-closed): {last_err}"
+    # Fail-open: could not get a verdict → proceed with no warning, note why in the log.
+    print(f"[guardrail] no verdict after retries, proceeding with no warning: {last_err}")
+    return True, ""
 
 
 def check(task: str) -> tuple[bool, str]:
-    if MODE == "off":
+    """Returns (allowed, warning). allowed is always True — kept in the return
+    shape so callers just switch from aborting on it to displaying the
+    warning alongside normal execution."""
+    if MODE == "off" or not POLICY:
         return True, ""
-    ok, reason = keyword_check(task)
-    if not ok:
-        return False, reason
-    if MODE == "strict":
-        return policy_check(task)
-    return True, ""
+    return policy_check(task)
 
 
 if __name__ == "__main__":
     import sys
 
-    allowed, why = check(" ".join(sys.argv[1:]))
-    print("ALLOW" if allowed else f"BLOCK: {why}")
+    _, warning = check(" ".join(sys.argv[1:]))
+    print(f"⚠️ {warning}" if warning else "no warnings")

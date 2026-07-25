@@ -18,7 +18,7 @@ export SCW_DEFAULT_ZONE="${SCW_ZONE}"
 
 SG=$(scw instance security-group create name="code-egress" \
   stateful=true inbound-default-policy=drop outbound-default-policy=drop \
-  zone="${SCW_ZONE}" -o json | jq -r '.id')
+  zone="${SCW_ZONE}" -o json | jq -r '.security_group.id // .id')
 echo "==> security group: ${SG}"
 
 rule() {  # direction protocol port
@@ -34,6 +34,10 @@ rule outbound TCP 587
 rule outbound TCP 53
 rule outbound UDP 53
 rule outbound UDP 123
+# Tailscale (builder → your self-hosted Forgejo). Direct WireGuard + STUN; if these
+# are blocked Tailscale still works via DERP relays over 443 (allowed above).
+rule outbound UDP 41641
+rule outbound UDP 3478
 # Inbound: SSH only (scope ip-range in the rule above to your IP for tighter security)
 rule inbound  TCP 22
 

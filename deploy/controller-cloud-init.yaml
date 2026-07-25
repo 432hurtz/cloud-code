@@ -1,9 +1,12 @@
 #cloud-config
 # Provisions the always-on controller: installs the Telegram poller and runs it
 # as a service. Reads its config from instance user-data (set by create-controller.sh).
+# requests is installed via apt (python3-requests) rather than pip so it reliably
+# lands on the system python3 the service uses. After provisioning it self-reports
+# status to Telegram (there's no inbound SSH by default, so this is the log channel).
 package_update: true
 packages:
-  - python3-pip
+  - python3-requests
   - curl
   - jq
 
@@ -15,6 +18,8 @@ write_files:
       After=network-online.target
       Wants=network-online.target
       [Service]
+      # scw needs HOME to locate its config; systemd doesn't set it by default.
+      Environment=HOME=/root
       EnvironmentFile=/opt/controller/env
       ExecStart=/usr/bin/python3 /opt/controller/poller.py
       Restart=always
@@ -24,7 +29,8 @@ write_files:
 
 runcmd:
   - curl -fsSL https://raw.githubusercontent.com/scaleway/scaleway-cli/master/scripts/get.sh | sh
-  - pip3 install --quiet requests
+  # Belt-and-suspenders: if apt didn't provide requests, fall back to pip.
+  - python3 -c "import requests" 2>/dev/null || pip3 install --quiet requests || true
   - mkdir -p /opt/controller
   - curl -s http://169.254.42.42/user_data/poller-b64 | base64 -d > /opt/controller/poller.py
   - |
@@ -35,7 +41,6 @@ runcmd:
     TELEGRAM_CHAT_ID=$(curl -s $U/telegram-chat-id)
     BUILDER_ID=$(curl -s $U/builder-id)
     SCW_ZONE=$(curl -s $U/scw-zone)
-    GUARDRAIL_BLOCK=$(curl -s $U/guardrail-block)
     SCW_ACCESS_KEY=$(curl -s $U/scw-access-key)
     SCW_SECRET_KEY=$(curl -s $U/scw-secret-key)
     SCW_DEFAULT_PROJECT_ID=$(curl -s $U/scw-project-id)
@@ -43,3 +48,15 @@ runcmd:
     EOF
   - systemctl daemon-reload
   - systemctl enable --now code-controller.service
+  # Self-report provisioning result to Telegram (no inbound SSH → this is the log channel).
+  - |
+    U=http://169.254.42.42/user_data
+    TOK=$(curl -s $U/telegram-bot-token); CHAT=$(curl -s $U/telegram-chat-id)
+    sleep 10
+    ST=$(systemctl is-active code-controller.service 2>&1)
+    LOG=$(journalctl -u code-controller.service --no-pager -n 15 2>&1 | tail -c 1500)
+    curl -s "https://api.telegram.org/bot${TOK}/sendMessage" \
+      --data-urlencode "chat_id=${CHAT}" \
+      --data-urlencode "text=🔧 Controller provisioning finished. service=${ST}
+    --- last log ---
+    ${LOG}" >/dev/null 2>&1 || true
