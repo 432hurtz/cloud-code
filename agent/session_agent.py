@@ -381,7 +381,9 @@ def load_chat(name: str) -> list:
 
 
 def save_chat(name: str, history: list) -> None:
-    chat_path(name).write_text(json.dumps(history, indent=2), encoding="utf-8")
+    p = chat_path(name)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
 
 def clear_chat(name: str) -> None:
@@ -1179,7 +1181,12 @@ def load_conv(name: str) -> list:
 
 def save_conv(name: str, history: list) -> None:
     # Cap at the last 40 messages so context + the file stay bounded.
-    conv_path(name).write_text(json.dumps(history[-40:], indent=2), encoding="utf-8")
+    # mkdir the project dir first: chat/talk don't call ensure_git, so on a
+    # project whose folder doesn't exist yet (e.g. active project left in a
+    # half-set-up state) writing here would otherwise crash with ENOENT.
+    p = conv_path(name)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(history[-40:], indent=2), encoding="utf-8")
 
 
 def clear_conv(name: str) -> None:
