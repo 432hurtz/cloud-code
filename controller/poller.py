@@ -224,6 +224,12 @@ def handle(text: str) -> None:
         # cancel a build command already queued on the builder but not yet run.
         # Snapshot what's there FIRST so we can report exactly what got flushed.
         n = pending_count()
+        # getWebhookInfo still counts the /flush message itself — it stays
+        # "pending" (unconfirmed) until our NEXT getUpdates advances the offset
+        # past it, which only happens after this handler returns. So subtract 1
+        # to report the genuine backlog sitting behind the command.
+        if n > 0:
+            n -= 1
         task = queued_task()
         drop_pending()
         clear_queued_task()
