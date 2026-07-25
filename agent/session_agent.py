@@ -66,17 +66,41 @@ TELEGRAM_DOC_LIMIT = 50 * 1024 * 1024
 
 
 # ── Telegram ────────────────────────────────────────────────────────────────
+def _tg_chunks(text: str, limit: int = 4000) -> list:
+    """Split a message to fit Telegram's 4096-char hard cap (margin for safety),
+    breaking on newline boundaries when possible. The chat/talk shell can emit
+    long plans/READMEs; without this an over-limit reply 400'd and vanished."""
+    chunks: list = []
+    while text:
+        if len(text) <= limit:
+            chunks.append(text)
+            break
+        cut = text.rfind("\n", 0, limit)
+        if cut < limit // 2:  # no sensible newline near the end → hard cut
+            cut = limit
+        chunks.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+        if len(chunks) >= 8:  # safety cap against a runaway reply flooding the chat
+            if text:
+                chunks.append(text[: limit - 15] + "\n…(truncated)")
+            break
+    return chunks or [""]
+
+
 def tg(text: str) -> None:
     if not (TG_TOKEN and TG_CHAT):
         print(text)
         return
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-            json={"chat_id": TG_CHAT, "text": text}, timeout=15,
-        )
-    except Exception as e:  # noqa: BLE001
-        print(f"telegram notify failed: {e}", file=sys.stderr)
+    for chunk in _tg_chunks(text or "(no response)"):
+        try:
+            r = requests.post(
+                f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                json={"chat_id": TG_CHAT, "text": chunk}, timeout=15,
+            )
+            if r.status_code != 200:  # e.g. 400 too-long / 429 rate-limit — don't fail silently
+                print(f"telegram send failed {r.status_code}: {r.text[:200]}", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001
+            print(f"telegram notify failed: {e}", file=sys.stderr)
 
 
 corpus_index.set_notifier(tg)
