@@ -106,6 +106,7 @@ the conversation and starts fresh next time you plan.
 
 ━━ SYSTEM ━━
 • /status — is the builder idle or busy?
+• /flush  — clear the queue: drop backlogged messages + cancel a queued command
 • /help   — this message
 
 ━━ HOW IT WORKS ━━
@@ -187,6 +188,12 @@ def start_build(task: str) -> None:
         reply(f"⏳ Builder is '{st}' — give it a moment and resend.")
 
 
+def clear_queued_task() -> None:
+    """Delete any build-task waiting on the builder so a stale/queued command
+    won't run on its next boot (empty content 400s, so delete the key)."""
+    scw("user-data", "delete", f"server-id={BUILDER}", "key=build-task", f"zone={ZONE}")
+
+
 def handle(text: str) -> None:
     text = (text or "").strip()
     if not text or text in ("/start", "/help"):
@@ -195,6 +202,13 @@ def handle(text: str) -> None:
     if text == "/status":
         st = builder_state()
         reply("Builder: " + ("🟢 idle (ready)" if st in IDLE_STATES else f"🟠 {st}"))
+        return
+    if text in ("/flush", "/clear"):
+        # Type this from Telegram to wipe the queue: drop any Telegram backlog AND
+        # cancel a build command already queued on the builder but not yet run.
+        drop_pending()
+        clear_queued_task()
+        reply("🧹 Flushed — dropped the Telegram backlog and cancelled any queued command.")
         return
     start_build(text)
 
