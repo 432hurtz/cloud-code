@@ -199,7 +199,21 @@ def handle(text: str) -> None:
     start_build(text)
 
 
+def drop_pending() -> None:
+    """Discard Telegram's backlog at startup so a controller restart doesn't replay
+    hours of queued messages — each of which would cold-boot the GPU builder. Without
+    this, the loop below starts with offset=None and the first getUpdates pulls every
+    retained update (up to 24h). deleteWebhook(drop_pending_updates=true) is the only
+    'clear the queue' op Telegram offers for a polling bot."""
+    try:
+        r = requests.get(f"{API}/deleteWebhook", params={"drop_pending_updates": "true"}, timeout=15)
+        print("dropped pending updates:", r.json().get("ok"))
+    except Exception as e:  # noqa: BLE001
+        print("drop_pending failed:", e)
+
+
 def main() -> None:
+    drop_pending()  # start clean — ignore anything queued while we were down
     reply("🟢 Controller online (running on the cloud VM). Send a build request or /status.")
     offset = None
     while True:
