@@ -208,13 +208,42 @@ def remote_url(name: str) -> str:
     return f"http://{FORGEJO_USER}:{FORGEJO_TOKEN}@{base}/{FORGEJO_USER}/{name}.git"
 
 
-def git(name: str, *args: str) -> subprocess.CompletedProcess:
+# A network git op (clone/fetch/push) to an unreachable Forgejo used to hang
+# FOREVER — no timeout — which blocked session_agent and defeated the idle
+# self-stop, so the GPU kept billing until the 60-min watchdog. Guard every
+# network git op two ways: git's own low-speed abort (bails if the transfer
+# stalls) AND a hard subprocess timeout (catches a dead TCP connect, which the
+# low-speed check can't, since no bytes ever move).
+GIT_NET_TIMEOUT = 45
+_GIT_NET_OPTS = ["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20"]
+
+
+def _git_timed_out(desc: str) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(
+        args=desc, returncode=124, stdout="",
+        stderr=f"timed out after {GIT_NET_TIMEOUT}s (Forgejo unreachable?)")
+
+
+def git(name: str, *args: str, timeout: int | None = None) -> subprocess.CompletedProcess:
     d = project_dir(name)
-    return subprocess.run(
-        ["git", "-C", str(d), *args], capture_output=True, text=True,
-        env=dict(os.environ, GIT_AUTHOR_NAME="cloud-code", GIT_AUTHOR_EMAIL="builder@local",
-                 GIT_COMMITTER_NAME="cloud-code", GIT_COMMITTER_EMAIL="builder@local"),
-    )
+    try:
+        return subprocess.run(
+            ["git", "-C", str(d), *args], capture_output=True, text=True, timeout=timeout,
+            env=dict(os.environ, GIT_AUTHOR_NAME="cloud-code", GIT_AUTHOR_EMAIL="builder@local",
+                     GIT_COMMITTER_NAME="cloud-code", GIT_COMMITTER_EMAIL="builder@local"),
+        )
+    except subprocess.TimeoutExpired:
+        return _git_timed_out(" ".join(args))
+
+
+def git_clone(name: str, dest: Path) -> subprocess.CompletedProcess:
+    """Clone from Forgejo with the same fail-fast guards as git()."""
+    try:
+        return subprocess.run(
+            ["git", *_GIT_NET_OPTS, "clone", remote_url(name), str(dest)],
+            capture_output=True, text=True, timeout=GIT_NET_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return _git_timed_out("clone")
 
 
 def ensure_git(name: str) -> None:
@@ -223,9 +252,13 @@ def ensure_git(name: str) -> None:
     # locally but it exists in Forgejo (e.g. after the builder was recreated),
     # clone it back so work survives builder churn.
     if not d.exists() and forgejo_repo_exists(name):
-        r = subprocess.run(["git", "clone", remote_url(name), str(d)], capture_output=True, text=True)
+        r = git_clone(name, d)
         if r.returncode != 0:
             tg(f"⚠️ couldn't clone '{name}' from Forgejo: {r.stderr.strip()[:150]}")
+            # A timed-out/partial clone can leave a broken dir — clear it so the
+            # init path below starts a clean local repo instead of choking on it.
+            if d.exists() and not (d / ".git" / "HEAD").exists():
+                shutil.rmtree(d, ignore_errors=True)
     d.mkdir(parents=True, exist_ok=True)
     if not (d / ".git").exists():
         git(name, "init", "-b", "main")
@@ -241,7 +274,7 @@ def ensure_git(name: str) -> None:
         # once above, so without this, an external edit would be invisible
         # and our next force-push could even discard it. No-op on a repo we
         # just cloned/created (no origin/main to reset to yet).
-        git(name, "fetch", "origin", "main")
+        git(name, *_GIT_NET_OPTS, "fetch", "origin", "main", timeout=GIT_NET_TIMEOUT)
         if git(name, "rev-parse", "--verify", "origin/main").returncode == 0:
             git(name, "reset", "--hard", "origin/main")
     ensure_index_ignored(name)
@@ -277,7 +310,7 @@ def push(name: str) -> str | None:
     """Push to Forgejo; return the browsable repo URL on success."""
     if not forgejo_ready():
         return None
-    r = git(name, "push", "-u", "origin", "main", "--force")
+    r = git(name, *_GIT_NET_OPTS, "push", "-u", "origin", "main", "--force", timeout=GIT_NET_TIMEOUT)
     if r.returncode != 0:
         tg(f"⚠️ push to Forgejo failed: {r.stderr.strip()[:200]}")
         return None
