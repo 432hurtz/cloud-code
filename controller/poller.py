@@ -194,6 +194,22 @@ def clear_queued_task() -> None:
     scw("user-data", "delete", f"server-id={BUILDER}", "key=build-task", f"zone={ZONE}")
 
 
+def pending_count() -> int:
+    """How many Telegram updates are still queued undelivered (-1 if unknown).
+    Read BEFORE dropping so /flush can report what it cleared."""
+    try:
+        r = requests.get(f"{API}/getWebhookInfo", timeout=15)
+        return int(r.json().get("result", {}).get("pending_update_count", 0))
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+def queued_task() -> str:
+    """The build command currently queued on the builder (empty if none)."""
+    r = scw("user-data", "get", f"server-id={BUILDER}", "key=build-task", f"zone={ZONE}")
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def handle(text: str) -> None:
     text = (text or "").strip()
     if not text or text in ("/start", "/help"):
@@ -206,9 +222,19 @@ def handle(text: str) -> None:
     if text in ("/flush", "/clear"):
         # Type this from Telegram to wipe the queue: drop any Telegram backlog AND
         # cancel a build command already queued on the builder but not yet run.
+        # Snapshot what's there FIRST so we can report exactly what got flushed.
+        n = pending_count()
+        task = queued_task()
         drop_pending()
         clear_queued_task()
-        reply("🧹 Flushed — dropped the Telegram backlog and cancelled any queued command.")
+        if n > 0:
+            backlog = f"{n} backlogged message{'s' if n != 1 else ''} dropped"
+        elif n == 0:
+            backlog = "no backlogged messages"
+        else:
+            backlog = "backlog dropped (count unavailable)"
+        cmd = f"“{task.replace(chr(10), ' ')[:150]}”" if task else "none"
+        reply(f"🧹 Flushed:\n• Telegram backlog: {backlog}\n• Queued command cancelled: {cmd}")
         return
     start_build(text)
 
